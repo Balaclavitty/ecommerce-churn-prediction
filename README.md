@@ -374,7 +374,7 @@ This is a portfolio project, but suggestions and feedback are welcome!
 
 **LinkedIn:** [www.linkedin.com/in/małgorzata-kot-18659216b](www.linkedin.com/in/małgorzata-kot-18659216b)
 
-**Project Link:** [github.com/yourusername/ecommerce-churn-prediction](https://github.com/yourusername/ecommerce-churn-prediction)
+**Project Link:** [github.com/yourusername/ecommerce-churn-prediction](https://github.com/Balaclavitty/ecommerce-churn-prediction)
 
 ---
 
