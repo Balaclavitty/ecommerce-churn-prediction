@@ -1,0 +1,9 @@
+Feature,Effect_Size,P_Value,Priority,dbt_Action
+tenure,7x,<0.000001,Tier 1,Create lifecycle stages
+preferred_order_category,6.5x,<0.000001,Tier 1,Create product risk categories
+has_complained,3x,<0.000001,Tier 1,Keep as binary flag
+marital_status,2.4x,<0.000001,Tier 1,Create stability categories
+days_since_last_order,U-shaped,<0.05,Tier 1,Create recency bins (U-shape)
+cashback_amount,r=-0.15,<0.000001,Tier 2,Create value tiers
+num_devices_registered,r=+0.11,<0.001,Tier 2,Keep as-is
+satisfaction_score,r=+0.10,<0.001,Tier 3,Use cautiously (paradoxical)

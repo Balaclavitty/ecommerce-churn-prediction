@@ -1,0 +1,6 @@
+{
+  "random_forest_auc": 0.9199200396384698,
+  "xgboost_auc": 0.9621213415571768,
+  "recommendation": "XGBoost",
+  "improvement_pct": 4.587496749749267
+}

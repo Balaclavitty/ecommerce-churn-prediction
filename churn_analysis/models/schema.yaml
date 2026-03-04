@@ -1,0 +1,260 @@
+version: 2
+
+models:
+  # ============================================================
+  # STAGING LAYER
+  # ============================================================
+  
+  - name: stg_customers
+    description: |
+      Cleaned and standardized customer data from raw seed.
+      This is the foundation layer where we:
+      - Add customer_id (auto-generated)
+      - Standardize column names
+      - Prepare for feature engineering
+    
+    columns:
+      - name: customer_id
+        description: Unique identifier for each customer (auto-generated)
+        tests:
+          - unique
+          - not_null
+      
+      - name: churn
+        description: Target variable - whether customer churned (1) or not (0)
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+      
+      - name: tenure
+        description: Number of months customer has been with company
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      
+      - name: satisfaction_score
+        description: Customer satisfaction rating (1-5 scale)
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5]
+      
+      - name: has_complained
+        description: Binary flag - has customer complained (1=yes, 0=no)
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+      
+      - name: cashback_amount
+        description: Total cashback amount received by customer
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+  
+  # ============================================================
+  # INTERMEDIATE LAYER
+  # ============================================================
+  
+  - name: int_customer_lifecycle
+    description: |
+      Customer lifecycle segmentation based on tenure.
+      Segments customers into risk categories:
+      - new_high_risk: 0-3 months (35% churn rate)
+      - growing_moderate: 4-6 months (7% churn)
+      - maturing_stable: 7-12 months (5.5% churn)
+      - established_loyal: 12+ months (5% churn)
+    
+    columns:
+      - name: customer_id
+        description: Foreign key to stg_customers
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      
+      - name: lifecycle_stage
+        description: Customer lifecycle stage based on tenure
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['new_high_risk', 'growing_moderate', 'maturing_stable', 'established_loyal']
+      
+      - name: is_new_customer
+        description: Binary flag for customers <= 3 months old
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+  
+  - name: int_recency_risk
+    description: |
+      Recency-based risk segmentation handling U-shaped pattern.
+      Very recent orders (0-7d) = new customers testing (16.8% churn)
+      Sweet spot (15-30d) = engaged customers (2.6% churn - lowest!)
+      Dormant (31+d) = going inactive (16.9%+ churn)
+    
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      
+      - name: recency_risk
+        description: Risk category based on days since last order
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['recent_new_customer', 'active_low_risk', 'stable_lowest_risk', 'dormant_high_risk']
+  
+  - name: int_product_risk
+    description: |
+      Product category risk segmentation.
+      Tech buyers (Mobile/Mobile Phone) have 6.5x higher churn than Grocery buyers.
+    
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      
+      - name: product_risk_category
+        description: Risk level based on product preferences
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['high_risk_tech', 'moderate_risk_fashion', 'low_risk_electronics', 'lowest_risk_grocery', 'low_risk_other']
+  
+  - name: int_demographic_stability
+    description: |
+      Demographic stability segmentation based on marital status.
+      Singles churn 2.4x more than married customers.
+    
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      
+      - name: demographic_stability
+        description: Stability level based on marital status
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['unstable_high_risk', 'moderate_risk', 'stable_low_risk']
+  
+  - name: int_customer_value
+    description: |
+      Customer value segmentation and spending velocity metrics.
+      Key feature: cashback_per_month became #1 predictor (24% importance in RF).
+    
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      
+      - name: cashback_per_month
+        description: Spending velocity - cashback divided by tenure (top feature!)
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+      
+      - name: value_tier
+        description: Customer value tier based on total cashback
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['high_value', 'medium_value', 'low_value', 'minimal_value']
+  
+  # ============================================================
+  # FEATURES LAYER
+  # ============================================================
+  
+  - name: fct_customer_churn_features
+    description: |
+      Final ML-ready feature table combining all engineered features.
+      This table powers the churn prediction model (0.96 ROC-AUC with XGBoost).
+      
+      Contains:
+      - 12 raw features from original data
+      - 22 engineered features from intermediate models
+      - 1 composite_risk_score (0-4 scale)
+      - 1 target variable (churn)
+      
+      Used by: XGBoost model achieving 69% recall on churners.
+    
+    tests:
+      - dbt_utils.equal_rowcount:
+          compare_model: ref('stg_customers')
+    
+    columns:
+      - name: customer_id
+        description: Primary key
+        tests:
+          - unique
+          - not_null
+      
+      - name: churn
+        description: Target variable for ML model
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+      
+      - name: composite_risk_score
+        description: |
+          Composite risk score (0-4) combining 5 key risk factors:
+          - New customer (+1)
+          - Tech buyer (+1)
+          - Has complained (+1)
+          - Single (+1)
+          - Dormant (+1)
+          
+          Validation: Score 4 customers have 73.7% churn rate!
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1, 2, 3, 4]
+      
+      - name: cashback_per_month
+        description: Top predictor in Random Forest (24.1% importance)
+        tests:
+          - not_null
+      
+      - name: lifecycle_stage
+        tests:
+          - not_null
+      
+      - name: recency_risk
+        tests:
+          - not_null
+      
+      - name: product_risk_category
+        tests:
+          - not_null
+      
+      - name: demographic_stability
+        tests:
+          - not_null
+      
+      - name: value_tier
+        tests:
+          - not_null
+
+
+      

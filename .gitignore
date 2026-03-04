@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# dbt
+churn_analysis/target/
+churn_analysis/dbt_packages/
+churn_analysis/logs/
+churn_analysis/dbt_modules/
+churn_analysis/*.duckdb
+churn_analysis/*.duckdb.wal
+churn_analysis/*.db
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+logs/

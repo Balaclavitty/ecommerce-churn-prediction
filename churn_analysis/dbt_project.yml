@@ -1,0 +1,51 @@
+
+# Naming the project
+name: 'churn_analysis'
+version: '1.0.0'
+config-version: 2
+
+# This setting configures which "profile" dbt uses for this project.
+profile: 'churn_analysis'
+
+# These configurations specify where dbt should look for different types of files.
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:         # directories to be removed by `dbt clean`
+  - "target"
+  - "dbt_packages"
+
+
+# Configuring models
+
+models:
+  churn_analysis:
+    staging:
+      +materialized: view
+      +tags: ['staging']
+    intermediate:
+      +materialized: view
+      +tags: ['intermediate']
+    features:
+      +materialized: table
+      +tags: ['features', 'ml']
+
+seeds:
+  churn_analysis:
+    ecommerce_churn_cleaned:
+      +column_types:
+        tenure: integer
+        warehouse_to_home: float
+        num_devices_registered: integer
+        satisfaction_score: integer
+        num_addresses: integer
+        has_complained: integer
+        days_since_last_order: integer
+        cashback_amount: float
+        churn: integer
+        days_missing_flag: integer
+        tenure_missing_flag: integer
