@@ -1,70 +1,92 @@
 
 # E-Commerce Churn Analysis - EDA Summary
-Date: 2026-02-25
+Date: 2026-04-23
 
 ## Dataset Overview
-- Total customers: 3,270
-- Churn rate: 16.33%
-- Features: 14
+- Total customers: 3,268
+- Churn rate: 16.31%
+- Features: 14 (excluding target)
 
-## Top 5 Churn Drivers (Ranked by Effect Size)
+## Top 5 Churn Drivers
 
-### 1. TENURE (7x impact) - STRONGEST PREDICTOR
-- New customers (0-3 months): 35.1% churn
-- Established customers (12+ months): ~5% churn
-- Correlation: r = -0.344 (p < 0.000001)
+### 1. TENURE - STRONGEST PREDICTOR
+- New customers (0-3 months): 39.4% churn
+- Established customers (7+ months): 4.8% churn
+- Correlation: r = -0.344
 
-### 2. PRODUCT CATEGORY (6.5x impact)
-- Mobile/Mobile Phone: 27.1% churn
-- Grocery: 4.1% churn
-- Chi-square: p < 0.000001
+### 2. PRODUCT CATEGORY
+- Mobile Phone: 26.9% churn (highest risk)
+- Grocery: 4.1% churn (lowest risk)
 
-### 3. COMPLAINTS (3x impact)
+### 3. COMPLAINTS
 - Complained: 31.8% churn
-- No complaint: 10.3% churn
-- Phi: 0.261 (p < 0.000001)
+- No complaint: 10.2% churn
 
-### 4. MARITAL STATUS (2.4x impact)
-- Single: 25.9% churn
+### 4. MARITAL STATUS
+- Single: 25.8% churn
 - Married: 10.9% churn
-- Chi-square: p < 0.000001
 
-### 5. RECENCY (Non-linear, U-shaped)
-- Recent (0-7d): 16.8% churn
-- Sweet spot (15-30d): 2.6% churn
-- Dormant (47+d): 31.6% churn
+### 5. RECENCY (Non-linear U-shaped)
+- Recent (0-7d): 18.5% churn
+- Sweet spot (8-30d): 9.0% churn
+- Note: 31+ day bucket only 2 customers — unreliable sample
 
-## Features for dbt
+## Missing Value Patterns (MNAR — Not Missing At Random)
 
-### Tier 1 - Must Include:
-1. tenure → lifecycle_stage
-2. preferred_order_category → product_risk
-3. has_complained → service_quality
-4. marital_status → demographic_stability
-5. days_since_last_order → recency_risk (binned)
+### Warehouse Distance Missing
+- Missing: 33.3% churn
+- Present: 15.6% churn
+- Interpretation: incomplete profile = disengaged customer
+- Action: warehouse_missing_flag kept as predictive feature
 
-### Tier 2 - Include:
-6. cashback_amount → value_tier
-7. num_devices_registered
-8. tenure_missing_flag
+### Tenure Missing
+- Missing: 29.6% churn
+- Present: 15.6% churn
+- Interpretation: unregistered/dormant customers = elevated risk
+- Action: tenure_missing_flag kept as predictive feature
 
-### Drop:
-- days_missing_flag (multicollinear, r=0.94)
-- warehouse_to_home (weak, r=0.068)
-- num_addresses (weak, r=0.046)
+## Features for Modeling
+
+### Tier 1 - Strong Predictors (Bonferroni survivors, |r| > 0.1):
+1. tenure (r=-0.344)
+2. has_complained (r=0.263)
+3. preferred_order_category_encoded (r=0.228)
+4. marital_status_Single (r=0.172)
+5. cashback_amount (r=-0.151)
+6. days_since_last_order (r=-0.143)
+7. num_devices_registered (r=0.110)
+
+### Tier 2 - Moderate Predictors (Bonferroni survivors, |r| 0.05-0.1):
+8. satisfaction_score (r=0.099) — paradoxical, use cautiously
+9. warehouse_missing_flag (r=0.096)
+10. tenure_missing_flag (r=0.081)
+11. warehouse_to_home (r=0.066)
+
+### Tier 3 - Weak but kept:
+12. num_addresses (p=0.007, borderline)
+13. marital_status_Married (r=-0.151)
+14. marital_status_Divorced (r=-0.011)
+
+### Dropped Features:
+- days_missing_flag: p=0.919, not significant
+- is_early_stage: r=-0.700 with tenure, redundant
+- tenure_segment: derived from tenure, redundant
+- preferred_order_category: replaced by encoded version
+- marital_status: replaced by dummy columns
 
 ## Statistical Findings
-- Bonferroni survivors: tenure, has_complained, cashback_amount
-- U-shaped pattern: days_since_last_order (linear corr misleading)
-- Paradox: satisfaction_score (higher = more churn, survivorship bias)
-- Outlier impact: 184 customers (5.6%) affecting correlation
+- Bonferroni correction applied across 14 features (α=0.003)
+- U-shaped pattern confirmed: days_since_last_order
+- Satisfaction paradox: higher score → more churn (survey timing bias)
+- Outlier impact: minimal across all features (max impact 0.012)
+- No severe multicollinearity detected (all |r| < 0.7)
 
 ## Business Recommendations
-1. First 90-day onboarding program (reduce 35% → 15% churn)
-2. 24-hour complaint response SLA
-3. Win-back campaign for 30+ days inactive
-4. Product-specific retention (tech vs grocery)
-5. Demographic targeting (singles vs married)
+1. First 90-day onboarding program — target 39% churn segment
+2. 24-hour complaint response SLA — complainers have 32% churn rate
+3. Win-back campaign for 15-30 days inactive (sweet spot before churn spikes)
+4. Product-specific retention: Mobile Phone vs Grocery customers
+5. Demographic targeting: Single customers have 26% churn rate
 
 ---
-Analysis completed: 2026-02-25 15:24
+Analysis completed: 2026-04-23 10:23

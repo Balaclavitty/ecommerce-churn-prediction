@@ -1,69 +1,176 @@
 """
 Test script to verify prediction pipeline works correctly.
+Uses dbt feature engineering logic replicated in Python
+for real-time inference without requiring dbt pipeline.
 """
 import joblib
 import pandas as pd
+import numpy as np
+import os
+import sys
+
+# PATHS
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+sys.path.append(BASE_DIR)
+
 from data_prep import ChurnDataPrep
 
 print("\n" + "="*70)
 print("🧪 TESTING PREDICTION PIPELINE")
 print("="*70)
 
-# Load trained model
-print("\n1️⃣ Loading model...")
-model = joblib.load('data/best_model.pkl')
-print("✓ Model loaded")
+# LOAD MODEL & PREPROCESSOR
+print("\n1️⃣ Loading model and preprocessor...")
+model = joblib.load(os.path.join(DATA_DIR, 'best_model.pkl'))
+preprocessor = ChurnDataPrep.load_preprocessor(
+    path=os.path.join(DATA_DIR, 'preprocessor.pkl')
+)
+print("✓ Model and preprocessor loaded successfully!")
+print(f"✓ Expected features: {len(preprocessor['feature_names'])}")
 
-# Create test customer data
-print("\n2️⃣ Creating test customer...")
-test_customer = {
-    'tenure': 0,
-    'warehouse_to_home': 15.0,
-    'num_devices_registered': 4,
-    'preferred_order_category': 'Mobile Phone',
-    'satisfaction_score': 3,
-    'marital_status': 'Single',
-    'num_addresses': 2,
-    'has_complained': 0,
-    'days_since_last_order': 5.0,
-    'cashback_amount': 150.0,
-    'tenure_missing_flag': 0
-}
+# FEATURE ENGINEERING FUNCTION
+def engineer_features(customer: dict) -> dict:
+    """
+    Replicate dbt feature engineering for real-time inference.
+    Mirrors logic from:
+    - int_customer_lifecycle.sql
+    - int_recency_risk.sql
+    - int_product_risk.sql
+    - int_customer_value.sql
+    """
+    c = customer.copy()
 
-print("✓ Test customer created:")
-for key, value in test_customer.items():
-    print(f"  • {key}: {value}")
+    # Ensuring missing flags exist
+    c.setdefault('tenure_missing_flag', 0)
+    c.setdefault('warehouse_missing_flag', 0)
+    c.setdefault('days_missing_flag', 0)
 
-# Transform using preprocessor
-print("\n3️⃣ Transforming data...")
-X_processed = ChurnDataPrep.transform_new_data(test_customer)
+    # int_customer_lifecycle logic
+    if c['tenure_missing_flag'] == 1:
+        c['lifecycle_stage'] = 'missing_tenure'
+    elif c['tenure'] == 0:
+        c['lifecycle_stage'] = 'brand_new'
+    elif c['tenure'] <= 3:
+        c['lifecycle_stage'] = 'new_high_risk'
+    elif c['tenure'] <= 6:
+        c['lifecycle_stage'] = 'growing_moderate'
+    elif c['tenure'] <= 12:
+        c['lifecycle_stage'] = 'maturing_stable'
+    else:
+        c['lifecycle_stage'] = 'established_loyal'
 
-print(f"✓ Data transformed:")
-print(f"  • Input columns: {len(test_customer)}")
-print(f"  • Output columns: {len(X_processed.columns)}")
-print(f"  • All numeric: {X_processed.dtypes.apply(lambda x: x.kind in 'biufc').all()}")
+    c['is_new_customer'] = int(
+        c['tenure_missing_flag'] == 0 and c['tenure'] <= 3
+    )
+    c['is_missing_tenure'] = int(c['tenure_missing_flag'] == 1)
+    c['is_established'] = int(
+        c['tenure'] > 12 and c['tenure_missing_flag'] == 0
+    )
 
-# Make prediction
-print("\n4️⃣ Making prediction...")
-prediction = model.predict(X_processed)[0]
-probabilities = model.predict_proba(X_processed)[0]
+    # int_recency_risk logic
+    days = c['days_since_last_order']
+    if days <= 7:
+        c['recency_risk'] = 'recent_new_customer'
+    elif days <= 14:
+        c['recency_risk'] = 'active_low_risk'
+    elif days <= 30:
+        c['recency_risk'] = 'stable_lowest_risk'
+    else:
+        c['recency_risk'] = 'dormant_high_risk'
 
-print(f"✓ Prediction complete!")
-print(f"\n{'='*70}")
-print("🎯 RESULTS")
-print("="*70)
-print(f"\nChurn Prediction: {'WILL CHURN' if prediction == 1 else 'WILL NOT CHURN'}")
-print(f"Churn Probability: {probabilities[1]*100:.2f}%")
-print(f"Retention Probability: {probabilities[0]*100:.2f}%")
+    c['is_very_recent'] = int(days <= 7)
+    c['is_dormant'] = int(days > 30)
+    c['is_active_stable'] = int(8 <= days <= 30)
 
-# Test with different customer profiles
-print(f"\n{'='*70}")
-print("🧪 TESTING MULTIPLE CUSTOMER PROFILES")
-print("="*70)
+    # int_product_risk logic
+    product_risk_map = {
+        'Mobile Phone': 'high_risk_tech',
+        'Fashion': 'moderate_risk_fashion',
+        'Laptop & Accessory': 'low_risk_electronics',
+        'Others': 'low_risk_other',
+        'Grocery': 'lowest_risk_grocery'
+    }
+    c['product_risk_category'] = product_risk_map.get(
+        c['preferred_order_category'], 'low_risk_other'
+    )
+    c['is_tech_buyer'] = int(c['preferred_order_category'] == 'Mobile Phone')
+    c['is_grocery_buyer'] = int(c['preferred_order_category'] == 'Grocery')
+    c['is_fashion_buyer'] = int(c['preferred_order_category'] == 'Fashion')
+
+    # int_customer_value logic
+    cashback = c['cashback_amount']
+    tenure = c['tenure']
+
+    if cashback >= 200:
+        c['value_tier'] = 'high_value'
+    elif cashback >= 145:
+        c['value_tier'] = 'medium_value'
+    else:
+        c['value_tier'] = 'low_value'
+
+    c['cashback_per_month'] = round(
+        cashback / tenure if tenure > 0 else cashback, 2
+    )
+    c['is_high_value'] = int(cashback >= 200)
+    c['is_low_spender'] = int(cashback < 75)
+
+    # composite_risk_score
+    c['composite_risk_score'] = int(
+        int(c['is_new_customer'] == 1 or c['is_missing_tenure'] == 1) +
+        int(c['is_tech_buyer']) +
+        int(c['has_complained']) +
+        int(c.get('marital_status') == 'Single') +
+        int(c['is_dormant'])
+    )
+
+    return c
+
+def predict_churn(customer: dict, model, preprocessor, threshold=0.3) -> dict:
+    """
+    Lower threshold catches more churners (higher recall)
+    Full prediction pipeline for a single customer.
+    1. Engineer features
+    2. Preprocess data
+    3. Predict churn and probabilities
+    """
+    # Step 1: Feature engineering
+    engineered = engineer_features(customer)
+
+    # Step 2: Convert to DataFrame
+    df = pd.DataFrame([engineered])
+
+    # Step 3: Preprocess
+    X = ChurnDataPrep.transform_new_data(
+        df,
+        preprocessor_path=os.path.join(DATA_DIR, 'preprocessor.pkl')
+    )
+
+    # Step 4: Predict - using custom threshold for classification 
+    probabilities = model.predict_proba(X)[0]
+    churn_prob = float(probabilities[1])
+
+    prediction = int(churn_prob >= threshold)
+
+    return {
+        'prediction': int(prediction),
+        'churn_probability': round(float(probabilities[1]) * 100, 2),
+        'retention_probability': round(float(probabilities[0]) * 100, 2),
+        'threshold_used': threshold,
+        'lifecycle_stage': engineered['lifecycle_stage'],
+        'recency_risk': engineered['recency_risk'],
+        'product_risk': engineered['product_risk_category'],
+        'value_tier': engineered['value_tier'],
+        'composite_risk_score': engineered['composite_risk_score']
+    }
+
+# TEST PROFILES
+print("\n2️⃣ Testing customer profiles...")
 
 test_profiles = [
     {
-        'name': 'Brand New - High Risk',
+     'name': '🚨 Brand New High Risk',
+        'expected': 'CHURN',
         'data': {
             'tenure': 0,
             'warehouse_to_home': 25.0,
@@ -75,29 +182,16 @@ test_profiles = [
             'has_complained': 1,
             'days_since_last_order': 30.0,
             'cashback_amount': 50.0,
-            'tenure_missing_flag': 0
+            'tenure_missing_flag': 0,
+            'warehouse_missing_flag': 0,
+            'days_missing_flag': 0
         }
-    },
+},
     {
-        'name': 'Established - Low Risk',
+        'name': '⚠️ At-Risk Customer',
+        'expected': 'CHURN',
         'data': {
-            'tenure': 24,
-            'warehouse_to_home': 10.0,
-            'num_devices_registered': 5,
-            'preferred_order_category': 'Grocery',
-            'satisfaction_score': 5,
-            'marital_status': 'Married',
-            'num_addresses': 3,
-            'has_complained': 0,
-            'days_since_last_order': 3.0,
-            'cashback_amount': 500.0,
-            'tenure_missing_flag': 0
-        }
-    },
-    {
-        'name': 'At-Risk Customer',
-        'data': {
-            'tenure': 6,
+            'tenure': 2,
             'warehouse_to_home': 30.0,
             'num_devices_registered': 3,
             'preferred_order_category': 'Fashion',
@@ -107,22 +201,84 @@ test_profiles = [
             'has_complained': 1,
             'days_since_last_order': 45.0,
             'cashback_amount': 100.0,
-            'tenure_missing_flag': 0
+            'tenure_missing_flag': 0,
+            'warehouse_missing_flag': 0,
+            'days_missing_flag': 0
         }
+    },
+    {
+           'name': '❓ Missing Tenure',
+        'expected': 'CHURN',
+        'data': {
+            'tenure': 0,
+            'warehouse_to_home': 15.0,
+            'num_devices_registered': 3,
+            'preferred_order_category': 'Mobile Phone',
+            'satisfaction_score': 3,
+            'marital_status': 'Single',
+            'num_addresses': 2,
+            'has_complained': 0,
+            'days_since_last_order': 5.0,
+            'cashback_amount': 120.0,
+            'tenure_missing_flag': 1,   
+            'warehouse_missing_flag': 0,
+            'days_missing_flag': 0
+        }
+    },
+    {
+    'name': '✅ Established Low Risk',
+    'expected': 'NO CHURN',
+    'data': {
+        'tenure': 24,
+        'warehouse_to_home': 10.0,
+        'num_devices_registered': 5,
+        'preferred_order_category': 'Grocery',
+        'satisfaction_score': 5,
+        'marital_status': 'Married',
+        'num_addresses': 3,
+        'has_complained': 0,
+        'days_since_last_order': 3.0,
+        'cashback_amount': 300.0,
+        'tenure_missing_flag': 0,
+        'warehouse_missing_flag': 0,
+        'days_missing_flag': 0
     }
+}
 ]
 
-for profile in test_profiles:
-    X = ChurnDataPrep.transform_new_data(profile['data'])
-    pred = model.predict(X)[0]
-    prob = model.predict_proba(X)[0]
-    
-    print(f"\n{profile['name']}:")
-    print(f"  Prediction: {'CHURN' if pred == 1 else 'NO CHURN'}")
-    print(f"  Churn Risk: {prob[1]*100:.1f}%")
-
-print(f"\n{'='*70}")
-print("✅ ALL TESTS PASSED!")
+# RUN PREDICTIONS
+print("\n" + "="*70)
+print("🎯 PREDICTION RESULTS")
 print("="*70)
-print("\n💡 Prediction pipeline is working correctly!")
-print("   Ready for deployment/API integration.")
+
+all_passed = True
+
+for profile in test_profiles:
+    result = predict_churn(profile['data'], model, preprocessor)
+
+    predicted = 'CHURN' if result['prediction'] == 1 else 'NO CHURN'
+    expected = profile['expected']
+    passed = predicted == expected
+
+    if not passed:
+        all_passed = False
+
+    status = "✅ PASSED" if passed else "❌ FAILED"
+
+    print(f"\n{profile['name']}")
+    print(f"   {status} Prediction: {predicted} | Expected: {expected}")
+    print(f"   📊 Churn Probability: {result['churn_probability']}%")
+    print(f"   🔄 Lifecycle Stage: {result['lifecycle_stage']}")
+    print(f"   ⏰ Recency Risk: {result['recency_risk']}")
+    print(f"   🛍️ Product Risk: {result['product_risk']}")
+    print(f"   💰 Value Tier: {result['value_tier']}")
+    print(f"   ⚠️ Risk Score: {result['composite_risk_score']}/5")
+
+# FINAL SUMMARY
+print("\n" + "="*70)
+if all_passed:
+    print("✅ ALL TESTS PASSED — Pipeline working correctly!")
+else:
+    print("⚠️  SOME TESTS FAILED — Review predictions above")
+print("="*70)
+print("\n💡 Ready for GCP deployment!")

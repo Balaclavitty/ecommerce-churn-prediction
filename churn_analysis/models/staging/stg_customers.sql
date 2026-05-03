@@ -2,12 +2,13 @@
 -- Clean and standardize raw customer data
 
 WITH source AS (
-    SELECT * FROM {{ ref('ecommerce_churn_cleaned')}}
+    SELECT * FROM {{ ref('ecommerce_churn_seed')}}
 )
 
 SELECT 
 -- Using row_number as customer_id 
-    ROW_NUMBER() OVER (ORDER BY tenure DESC, cashback_amount DESC) AS customer_id,
+    ROW_NUMBER() OVER (ORDER BY tenure DESC, cashback_amount DESC,
+                       days_since_last_order ASC) AS customer_id,
 
     -- Numeric features
     tenure,
@@ -29,6 +30,7 @@ SELECT
     -- Missing value flags
     days_missing_flag,
     tenure_missing_flag,
+    warehouse_missing_flag,
 
     -- Metadata
     CURRENT_TIMESTAMP AS loaded_at

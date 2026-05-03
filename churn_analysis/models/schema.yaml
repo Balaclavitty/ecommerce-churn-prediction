@@ -15,7 +15,7 @@ models:
     
     columns:
       - name: customer_id
-        description: Unique identifier for each customer (auto-generated)
+        description: Unique identifier for each customer (auto-generated via ROW_NUMBER())
         tests:
           - unique
           - not_null
@@ -32,8 +32,9 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 100
+              arguments:
+                min_value: 0
+                max_value: 100
       
       - name: satisfaction_score
         description: Customer satisfaction rating (1-5 scale)
@@ -54,7 +55,45 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
+                max_value: 1000
+
+      - name: tenure_missing_flag
+        description: Binary - tenure was originally missing (1=yes, 0=no)
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: warehouse_missing_flag
+        description: Binary - warehouse_to_home was originally missing (1=yes, 0=no)
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: days_missing_flag
+        description: Binary - days_since_last_order was originally missing (1=yes, 0=no)
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: preferred_order_category
+        description: Raw product category - encoded in marts layer
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Laptop & Accessory', 'Mobile Phone',
+                       'Fashion', 'Grocery', 'Others']
+
+      - name: marital_status
+        description: Raw marital status - encoded in marts layer
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Single', 'Married', 'Divorced']
   
   # ============================================================
   # INTERMEDIATE LAYER
@@ -64,10 +103,13 @@ models:
     description: |
       Customer lifecycle segmentation based on tenure.
       Segments customers into risk categories:
-      - new_high_risk: 0-3 months (35% churn rate)
-      - growing_moderate: 4-6 months (7% churn)
+      - brand_new: 0 months (54.3% - CRITICAL RISK!)
+      - new_high_risk: 1-3 months (35.1% churn)
+      - growing_moderate: 4-6 months (7.0% churn)
       - maturing_stable: 7-12 months (5.5% churn)
-      - established_loyal: 12+ months (5% churn)
+      - established_loyal: 12+ months (~5% churn)
+      - missing_tenure: tenure was missing (30.0% churn - ELEVATED RISK!)
+                        (NOT the same as brand_new - data gap customers)
     
     columns:
       - name: customer_id
@@ -83,10 +125,24 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['new_high_risk', 'growing_moderate', 'maturing_stable', 'established_loyal']
+              values: [
+                  'brand_new', 
+                  'new_high_risk', 
+                  'growing_moderate', 
+                  'maturing_stable', 
+                  'established_loyal', 
+                  'missing_tenure'
+                ]
       
       - name: is_new_customer
         description: Binary flag for customers <= 3 months old
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_missing_tenure
+        description: Binary flag for customers with missing tenure
         tests:
           - not_null
           - accepted_values:
@@ -95,9 +151,11 @@ models:
   - name: int_recency_risk
     description: |
       Recency-based risk segmentation handling U-shaped pattern.
-      Very recent orders (0-7d) = new customers testing (16.8% churn)
-      Sweet spot (15-30d) = engaged customers (2.6% churn - lowest!)
-      Dormant (31+d) = going inactive (16.9%+ churn)
+      recent_new_customer: 0-7d = new customers testing (16.8% churn)
+      active_low_risk: 8-14d (9.3% churn)
+      stable_lowest_risk: 15-30d (2.6% churn - sweet spot!)
+      dormant_high_risk: 31+d (2 customers: business logic high risk - 
+                              churn rate unreliable but segment conceptually valid)
     
     columns:
       - name: customer_id
@@ -112,12 +170,14 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['recent_new_customer', 'active_low_risk', 'stable_lowest_risk', 'dormant_high_risk']
+              values: ['recent_new_customer', 'active_low_risk', 
+                      'stable_lowest_risk', 'dormant_high_risk']
   
   - name: int_product_risk
     description: |
       Product category risk segmentation.
-      Tech buyers (Mobile/Mobile Phone) have 6.5x higher churn than Grocery buyers.
+      Mobile Phone buyers: 26.9% churn (highest risk)
+      Grocery buyers: 4.1% churn (lowest risk)
     
     columns:
       - name: customer_id
@@ -132,12 +192,15 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['high_risk_tech', 'moderate_risk_fashion', 'low_risk_electronics', 'lowest_risk_grocery', 'low_risk_other']
+              values: ['high_risk_tech', 'moderate_risk_fashion', 
+                      'low_risk_electronics', 'lowest_risk_grocery', 'low_risk_other']
   
   - name: int_demographic_stability
     description: |
-      Demographic stability segmentation based on marital status.
-      Singles churn 2.4x more than married customers.
+      Marital status risk segmentation.
+      Single: 25.8% churn (unstable_high_risk)
+      Divorced: 15.5% churn (moderate_risk)
+      Married: 10.9% churn (stable_low_risk)
     
     columns:
       - name: customer_id
@@ -157,7 +220,7 @@ models:
   - name: int_customer_value
     description: |
       Customer value segmentation and spending velocity metrics.
-      Key feature: cashback_per_month became #1 predictor (24% importance in RF).
+      cashback_per_month = cashback / tenure (top predictor in ML model)
     
     columns:
       - name: customer_id
@@ -168,18 +231,19 @@ models:
               field: customer_id
       
       - name: cashback_per_month
-        description: Spending velocity - cashback divided by tenure (top feature!)
+        description: Spending velocity
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
       
       - name: value_tier
         description: Customer value tier based on total cashback
         tests:
           - not_null
           - accepted_values:
-              values: ['high_value', 'medium_value', 'low_value', 'minimal_value']
+              values: ['high_value', 'medium_value', 'low_value']
   
   # ============================================================
   # FEATURES LAYER
@@ -188,19 +252,12 @@ models:
   - name: fct_customer_churn_features
     description: |
       Final ML-ready feature table combining all engineered features.
-      This table powers the churn prediction model (0.96 ROC-AUC with XGBoost).
+      14 features + composite_risk_score + target variable (churn). 
       
-      Contains:
-      - 12 raw features from original data
-      - 22 engineered features from intermediate models
-      - 1 composite_risk_score (0-4 scale)
-      - 1 target variable (churn)
-      
-      Used by: XGBoost model achieving 69% recall on churners.
-    
     tests:
       - dbt_utils.equal_rowcount:
-          compare_model: ref('stg_customers')
+          arguments:
+            compare_model: ref('stg_customers')
     
     columns:
       - name: customer_id
@@ -218,21 +275,21 @@ models:
       
       - name: composite_risk_score
         description: |
-          Composite risk score (0-4) combining 5 key risk factors:
+          Composite risk score (0-5) combining 5 key risk factors:
           - New customer (+1)
           - Tech buyer (+1)
           - Has complained (+1)
           - Single (+1)
           - Dormant (+1)
           
-          Validation: Score 4 customers have 73.7% churn rate!
+          Validation: Score 4-5 customers have 73.7% churn rate!
         tests:
           - not_null
           - accepted_values:
-              values: [0, 1, 2, 3, 4]
+              values: [0, 1, 2, 3, 4, 5]
       
       - name: cashback_per_month
-        description: Top predictor in Random Forest (24.1% importance)
+        description: Top predictor in ML model - spending velocity
         tests:
           - not_null
       

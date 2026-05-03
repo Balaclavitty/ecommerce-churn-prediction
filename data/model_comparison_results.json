@@ -1,6 +1,12 @@
 {
-  "random_forest_auc": 0.9199200396384698,
-  "xgboost_auc": 0.9621213415571768,
+  "random_forest_auc": 0.9203300927745219,
+  "xgboost_auc": 0.9594901672675085,
   "recommendation": "XGBoost",
-  "improvement_pct": 4.587496749749267
+  "improvement_pct": 4.2550031559796695,
+  "scale_pos_weight": 5.13849765258216,
+  "train_samples": 2615,
+  "test_samples": 654,
+  "n_features": 45,
+  "churn_rate_train": 0.16290630975143403,
+  "churn_rate_test": 0.1636085626911315
 }

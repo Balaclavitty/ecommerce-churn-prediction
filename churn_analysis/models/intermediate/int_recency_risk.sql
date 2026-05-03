@@ -11,13 +11,13 @@ SELECT
     -- Recent (0-7d): 16.8% churn - new customers, trial period
     -- Active (8-14d): 9.3% churn - engaged but recent
     -- Sweet spot (15-30d): 2.6% churn - LOWEST risk, regular customers
-    -- Dormant (31+d): 16.9%+ churn - inactive, high risk
+    -- Dormant (31+d): business logic (only 2 customers)
     CASE
         WHEN days_since_last_order <= 7 THEN 'recent_new_customer'          -- 16.8% churn
         WHEN days_since_last_order <= 14 THEN 'active_low_risk'             -- 9.3% churn
         WHEN days_since_last_order <= 30 THEN 'stable_lowest_risk'          -- 2.6% churn
-        ELSE 'dormant_high_risk'                                            -- 16.9-31.6% churn
-    END AS recency_risk,
+        ELSE 'dormant_high_risk'                                            -- business logic
+    END AS recency_risk,                                                    -- only 2 customers in training data, rate unreliable
 
     -- Binary flags
     CASE WHEN days_since_last_order <= 7 THEN 1 ELSE 0 END AS is_very_recent,

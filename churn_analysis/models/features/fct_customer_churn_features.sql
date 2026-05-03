@@ -45,10 +45,12 @@ SELECT
     c.has_complained,
     c.days_missing_flag,
     c.tenure_missing_flag,
+    c.warehouse_missing_flag,
     
     -- Lifecycle features
     l.lifecycle_stage,
     l.is_new_customer,
+    l.is_missing_tenure,
     l.is_established,
     l.tenure_segment,
     
@@ -78,11 +80,14 @@ SELECT
     v.is_low_spender,
     
     -- Composite risk score (0-5, higher = more risk)
-    (l.is_new_customer +           -- New customer risk
-     p.is_tech_buyer +             -- Tech buyer risk
-     c.has_complained +            -- Complaint risk
-     d.is_single +                 -- Single status risk
-     r.is_dormant                  -- Dormant risk
+    (
+        CASE WHEN l.is_new_customer = 1
+                OR l.is_missing_tenure = 1
+                THEN 1 ELSE 0 END +   -- new OR missing tenure risk
+        p.is_tech_buyer +             -- Tech buyer risk
+        c.has_complained +            -- Complaint risk
+        d.is_single +                 -- Single status risk
+        r.is_dormant                  -- Dormant risk
     ) AS composite_risk_score,
     
     -- Target variable
@@ -92,9 +97,12 @@ SELECT
     c.loaded_at,
     CURRENT_TIMESTAMP AS features_generated_at
 
+-- All models derive from stg_customers
+-- they should ALL have the same customer_ids
+
 FROM customers c
-LEFT JOIN lifecycle l ON c.customer_id = l.customer_id
-LEFT JOIN recency r ON c.customer_id = r.customer_id
-LEFT JOIN product p ON c.customer_id = p.customer_id
-LEFT JOIN demographic d ON c.customer_id = d.customer_id
-LEFT JOIN value v ON c.customer_id = v.customer_id
+INNER JOIN lifecycle l ON c.customer_id = l.customer_id
+INNER JOIN recency r ON c.customer_id = r.customer_id
+INNER JOIN product p ON c.customer_id = p.customer_id
+INNER JOIN demographic d ON c.customer_id = d.customer_id
+INNER JOIN value v ON c.customer_id = v.customer_id

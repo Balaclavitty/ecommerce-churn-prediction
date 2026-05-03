@@ -1,3 +1,8 @@
+"""
+Model comparison: Random Forest vs XGBoost for churn prediction.
+Loads engineered features from dbt via data_prep.py.
+Handles class imbalance, evaluates and saves best model.
+"""
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -8,31 +13,51 @@ import seaborn as sns
 import joblib
 import json
 import os
+import sys
 
-# Importing data prep module
+# PATHS
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+DUCKDB_PATH = os.path.join(DATA_DIR, 'churn_dev.duckdb') 
+
+# IMPORTS 
+sys.path.append(BASE_DIR)
 from data_prep import ChurnDataPrep
 
 print("\n" + "="*70)
 print("🤖 MODEL COMPARISON: RANDOM FOREST vs XGBOOST")
 print("="*70)
 
-# Creating data prep object
-data_prep = ChurnDataPrep(data_path='data/ml_features.csv')
-
-# Preparing data
+# DATA PREPARATION
+data_prep = ChurnDataPrep(duckdb_path=DUCKDB_PATH)
 data_prep.prepare()
 
-# Getting train/test splits
 X_train, X_test, Y_train, Y_test = data_prep.get_train_test_data()
 
+# Defining feature names immediately after split
+feature_names = X_train.columns.tolist()
+print(f"✓ Feature names defined: {len(feature_names)} features")
+
 # Saving preprocessor for future use
-data_prep.save_preprocessor(path='data/preprocessor.pkl')
+data_prep.save_preprocessor(
+    path=os.path.join(DATA_DIR, 'preprocessor.pkl')
+)
+
+# CLASS IMBALANCE
+negative = (Y_train == 0).sum()
+positive = (Y_train == 1).sum()
+scale_pos_weight = negative / positive
+
+print(f"\n📊 Class distribution:")
+print(f"     Non-churn: {negative:,} ({negative/(negative+positive)*100:.1f}%)")
+print(f"     Churn:     {positive:,} ({positive/(negative+positive)*100:.1f}%)")
+print(f" scale_pos_weight: {scale_pos_weight:.2f}")
 
 # ============================================================
 # RANDOM FOREST
 # ============================================================
 
-rf_model_path = 'data/rf_baseline_model.pkl'
+rf_model_path = os.path.join(DATA_DIR, 'random_forest_model.pkl')
 
 if os.path.exists(rf_model_path):
     print("\n" + "="*70)
@@ -52,6 +77,7 @@ else:
         max_depth=10,
         min_samples_split=50,
         min_samples_leaf=20,
+        class_weight= 'balanced',     # handles 16.3% churn imbalance
         random_state=42,
         n_jobs=-1
     )
@@ -75,24 +101,37 @@ print(f"\n📊 Random Forest ROC-AUC: {rf_roc_auc:.4f}")
 # XGBOOST
 # ============================================================
 
-print("\n" + "="*70)
-print("⚡ XGBOOST: Training new model")
-print("="*70)
+xgb_model_path  = os.path.join(DATA_DIR, 'xgboost_model.pkl')
 
-xgb_model = XGBClassifier(
-    n_estimators=100,
-    max_depth=10,
-    learning_rate=0.1,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-    eval_metric='logloss',
-    use_label_encoder=False
-)
+if os.path.exists(xgb_model_path):
+    print("\n" + "="*70)
+    print("⚡ XGBOOST: Loading existing model")
+    print("="*70)
+    xgb_model = joblib.load(xgb_model_path)
+    print(f"✓ Loaded existing XGBoost model")
 
-print("Training...")
-xgb_model.fit(X_train, Y_train)
-print("✓ XGBoost training complete!")
+else:
+    print("\n" + "="*70)
+    print("⚡ XGBOOST: Training new model")
+    print("="*70)
+
+    xgb_model = XGBClassifier(
+        n_estimators=100,
+        max_depth=10,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        scale_pos_weight=scale_pos_weight,
+        random_state=42,
+        eval_metric='logloss',
+    )
+
+    print("Training...")
+    xgb_model.fit(X_train, Y_train)
+    print("✓ XGBoost training complete!")
+
+    joblib.dump(xgb_model, xgb_model_path)
+    print(f"✓ Saved: {xgb_model_path}")
 
 # Predictions
 xgb_pred = xgb_model.predict(X_test)
@@ -149,12 +188,12 @@ print("🔥 TOP 10 FEATURES")
 print("="*70)
 
 rf_importance = pd.DataFrame({
-    'feature': data_prep.feature_names,
+    'feature': feature_names,
     'importance': rf_model.feature_importances_
 }).sort_values('importance', ascending=False)
 
 xgb_importance = pd.DataFrame({
-    'feature': data_prep.feature_names,
+    'feature': feature_names,
     'importance': xgb_model.feature_importances_
 }).sort_values('importance', ascending=False)
 
@@ -233,7 +272,8 @@ ax4.set_title('Top 15 Feature Importance', fontweight='bold', fontsize=14)
 ax4.legend(fontsize=11)
 ax4.grid(axis='x', alpha=0.3)
 
-plt.savefig('data/model_comparison.png', dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(DATA_DIR, 'model_comparison.png'), 
+            dpi=300, bbox_inches='tight')
 print("✓ Saved: data/model_comparison.png")
 plt.show()
 
@@ -263,27 +303,210 @@ print(f"   ROC-AUC: {best_auc:.4f}")
 print(f"   Improvement: {improvement:+.2f}%")
 
 # ============================================================
+# SHAP EXPLAINABILITY
+# ============================================================
+
+print("\n" + "="*70)
+print("🔍 SHAP EXPLAINABILITY ANALYSIS")
+print(f"   Model: {recommendation}")
+print("="*70)
+
+import shap
+
+# 1. Compute SHAP values for best model
+print("\nComputing SHAP values...")
+explainer = shap.TreeExplainer(best_model)
+shap_values = explainer.shap_values(X_test)
+
+# Handling RF which returns list of arrays (one per class)
+# XGBoost returns single array
+if isinstance(shap_values, list):
+    shap_values = shap_values[1]   # class 1 churn
+
+print(f"✓ SHAP values computed")
+print(f"Customer explained: {shap_values.shape[0]}")
+print(f"Features explained: {shap_values.shape[1]}")
+
+# 2. Global Feature Importance (Summary Plot)
+print("\n📊 Generating Summary Plot...")
+plt.figure(figsize=(12, 10))
+shap.summary_plot(
+    shap_values,
+    X_test,
+    feature_names=feature_names,
+    plot_type='bar',
+    max_display=20,
+    show=False
+)
+plt.title(f"SHAP Feature Importance - {recommendation}\n" 
+          f"(Mean absolute impact on churn probability)",
+          fontweight='bold', fontsize=14, pad=20)
+plt.tight_layout()
+plt.savefig(os.path.join(DATA_DIR, 'shap_summary_bar.png'),
+            dpi=300, bbox_inches='tight')
+plt.show()
+print("✓ Saved: shap_summary_bar.png")
+
+# 3. Beeswarm plot (direction of impact)
+print("\n📊 Generating Beeswarm Plot...")
+plt.figure(figsize=(12, 10))
+shap.summary_plot(
+    shap_values,
+    X_test,
+    feature_names=feature_names,
+    max_display=20,
+    show=False
+)
+plt.title(f"SHAP Beeswarm - {recommendation}\n"
+          f"(Red = increases churn, Blue = decreases churn)",
+          fontweight='bold', fontsize=14, pad=20)
+plt.tight_layout()
+plt.savefig(os.path.join(DATA_DIR, 'shap_beeswarm.png'),
+            dpi=300, bbox_inches='tight')
+plt.show()
+print("✓ Saved: shap_beeswarm.png")
+
+# 4. Top SHAP Features Table
+print("\n📊 Top 15 Features by Mean SHAP Value:")
+shap_importance = pd.DataFrame({
+    'feature': feature_names,
+    'shap_value': np.abs(shap_values).mean(axis=0)
+}).sort_values('shap_value', ascending=False)
+
+print(shap_importance.head(15).to_string(index=False))
+
+# 5. Individual Customer Explanation
+print(f"\n📊 Individual Customer Explanations...")
+
+# Using correct probabilities based on winning model
+best_pred_proba = (
+    xgb_pred_proba if 'XGBoost' in recommendation
+    else rf_pred_proba
+)
+
+highest_risk_idx = np.argmax(best_pred_proba)
+lowest_risk_idx = np.argmin(best_pred_proba)
+
+for label, idx in [
+    ('🚨 Highest Risk', highest_risk_idx),
+    ('✅ Lowest Risk', lowest_risk_idx)
+]:
+    print(f"\n{label} Customer")
+    print(f"   Churn probability: {best_pred_proba[idx]*100:.1f}%")
+    print(f"   Actual churn: {Y_test.iloc[idx]} ")
+
+    customer_shap = shap_values[idx]
+    feature_contributions = pd.DataFrame({
+        'feature': feature_names,
+        'shap_value': customer_shap,
+        'feature_value': X_test.iloc[idx].values
+    }).sort_values('shap_value', key=abs, ascending=False).head(5)
+
+    print(f" Top 5 drivers:")
+    for _, row in feature_contributions.iterrows():
+        direction = "↑ increases" if row['shap_value'] > 0 else "↓ decreases"
+        print(f" • {row['feature']:35}"
+              f"value={row['feature_value']:.2f}"
+              f"SHAP={row['shap_value']:+.3f} ({direction} churn)")
+
+# 6. Waterfall Plot - Highest Risk Customer
+print("\n📊 Generating Waterfall Plot for highest risk customer...")
+
+shap_explanation = shap.Explanation(
+    values=shap_values[highest_risk_idx],
+    base_values=explainer.expected_value,
+    data=X_test.iloc[highest_risk_idx].values,
+    feature_names=feature_names
+)
+
+plt.figure(figsize=(14, 8))
+shap.waterfall_plot(shap_explanation, max_display=15, show=False)
+plt.title(
+    f"Why is this customer "
+    f"{best_pred_proba[highest_risk_idx]*100:.1f}% likely to churn?",
+    fontweight='bold', fontsize=14
+)
+plt.tight_layout()
+plt.savefig(os.path.join(DATA_DIR, 'shap_waterfall_high_risk.png'),
+            dpi=300, bbox_inches='tight')
+plt.show()
+print("✓ Saved: shap_waterfall_high_risk.png")
+
+# 7. SHAP vs Model Feature Importance Comparison
+print("\n📊 SHAP vs Model Feature Importance — Top 10:")
+print(f"\n{'Rank':<6} {'Feature':<40} {'SHAP rank':>10} {'Model rank':>10} {'Match'}")
+print("-" * 75)
+
+shap_top10 = shap_importance.head(10)['feature'].tolist()
+model_top10 = (xgb_importance if 'XGBoost' in recommendation
+               else rf_importance).head(10)['feature'].tolist()
+
+for rank, feat in enumerate(shap_top10, 1):
+    model_rank = model_top10.index(feat) + 1 if feat in model_top10 else '>10'
+    agreement = "✅" if feat in model_top10 else "⚠️"
+    shap_rank_str = f"#{rank}"
+    model_rank_str = f"#{model_rank}"
+    print(f"#{rank:<5} {feat:<40} {shap_rank_str:>10} {model_rank_str:>10} {agreement}")
+    
+# 8. Save SHAP values for dashboard use
+shap_df = pd.DataFrame(shap_values, columns=feature_names)
+shap_df.to_csv(
+    os.path.join(DATA_DIR, 'shap_values.csv'),
+    index=False
+)
+print(f"\n✓ Saved: shap_values.csv")
+print(f"  Rows: {shap_df.shape[0]} customers")
+print(f"  Cols: {shap_df.shape[1]} features")
+print(f"  Use for: Streamlit dashboard, PowerBI analysis")
+
+print("\n" + "="*70)
+print("✅ SHAP ANALYSIS COMPLETE!")
+print("="*70)
+print(f"""
+Key SHAP Findings:
+  • Model explained:    {recommendation}
+  • Top predictor:      {shap_importance.iloc[0]['feature']}
+  • Customers analyzed: {shap_values.shape[0]}
+  • Files saved:        shap_summary_bar.png
+                        shap_beeswarm.png
+                        shap_waterfall_high_risk.png
+                        shap_values.csv
+""")
+# ============================================================
 # SAVE RESULTS
 # ============================================================
 
 print("\n💾 Saving results...")
 
-joblib.dump(best_model, 'data/best_model.pkl')
-joblib.dump(xgb_model, 'data/xgboost_model.pkl')
+joblib.dump(best_model, 
+            os.path.join(DATA_DIR, 'best_model.pkl'))
+joblib.dump(rf_model, 
+            os.path.join(DATA_DIR, 'random_forest_model.pkl'))
+joblib.dump(xgb_model, 
+            os.path.join(DATA_DIR, 'xgboost_model.pkl'))
 
 comparison_results = {
     'random_forest_auc': float(rf_roc_auc),
     'xgboost_auc': float(xgb_roc_auc),
     'recommendation': recommendation,
-    'improvement_pct': float(improvement)
+    'improvement_pct': float(improvement),
+    'scale_pos_weight': float(scale_pos_weight),
+    'train_samples': int(len(X_train)),
+    'test_samples': int(len(X_test)),
+    'n_features': int(len(feature_names)),
+    'churn_rate_train': float(Y_train.mean()),
+    'churn_rate_test': float(Y_test.mean())
 }
 
-with open('data/model_comparison_results.json', 'w') as f:
+with open(os.path.join(DATA_DIR, 'model_comparison_results.json'),
+           'w') as f:
     json.dump(comparison_results, f, indent=2)
 
-print("✓ Saved best_model.pkl")
-print("✓ Saved xgboost_model.pkl")
-print("✓ Saved model_comparison_results.json")
+print("✓ Saved: best_model.pkl")
+print("✓ Saved: random_forest_model.pkl")
+print("✓ Saved: xgboost_model.pkl")
+print("✓ Saved: model_comparison_results.json")
+print("✓ Saved: model_comparison.png")
 
 print("\n" + "="*70)
 print("✅ COMPARISON COMPLETE!")

@@ -1,8 +1,12 @@
 import duckdb
 import pandas as pd
+import os
 
 # Connecting to dbt's DuckDB database
-conn = duckdb.connect('dev.duckdb')
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+DUCKDB_PATH = os.path.join(DATA_DIR, 'churn_dev.duckdb')
+conn = duckdb.connect(DUCKDB_PATH)
 
 # Querying the final feature table
 query = """
@@ -130,14 +134,29 @@ print("\n" + "="*70)
 print("VALIDATION: Do churn rates match EDA?")
 print("="*70)
 
+print("\n✓ Actual churn rates from dbt:")
+print(lifecycle_dist.to_string(index=False))
 print("\n✓ Expected from EDA:")
-print("  • new_high_risk:        35.1% churn")
-print("  • recent_new_customer:  16.8% churn")
-print("  • dormant_high_risk:    16.9%+ churn")
-print("  • high_risk_tech:       27.1% churn")
-print("  • unstable_high_risk:   25.9% churn")
+expected = {
+    'brand_new': 54.3,
+    'new_high_risk': 35.1,
+    'growing_moderate': 7.0,
+    'maturing_stable': 5.5,
+    'established_loyal': 5.8,
+    'missing_tenure': 30.0
+}
 
-print("\n✓ Check if dbt output matches these numbers above!")
+for stage, expected_rate in expected.items():
+    actual = lifecycle_dist[
+        lifecycle_dist['lifecycle_stage'] == stage
+    ]['churn_pct'].values
+    if len(actual) > 0:
+        diff = actual[0] - expected_rate
+        status = "✅" if abs(diff) < 5 else "⚠️"
+        print(f"  {status} {stage:25} "
+              f"expected={expected_rate}% "
+              f"actual={actual[0]}% "
+              f"diff={diff:+.1f}pp")
 
 print("\n" + "="*70)
 print("✅ FEATURE TABLE READY FOR MODELING!")

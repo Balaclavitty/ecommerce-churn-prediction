@@ -13,7 +13,6 @@ SELECT
         WHEN marital_status = 'Single' THEN 'unstable_high_risk'    -- 25.9% churn
         WHEN marital_status = 'Divorced' THEN 'moderate_risk'       -- 15.5% churn
         WHEN marital_status = 'Married' THEN 'stable_low_risk'      -- 10.9% churn
-        ELSE 'unknown'
     END AS demographic_stability,
     
     -- Binary flags

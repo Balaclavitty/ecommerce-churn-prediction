@@ -1,28 +1,40 @@
 """ 
 Data preparation for churn prediction models.
-Handles loading, encoding, and splitting the data for training and testing.
+Loads engineered features from dbt (fct_customer_churn_features)
+and prepares train/test splits for modeling. 
+
+This module only handles: loading -> encoding -> splitting. 
 """
-from os import path
-
-from importlib.resources import path
-
 import pandas as pd
-from sklearn.model_selection import train_test_split
+import duckdb
 import pickle
 import os
+from sklearn.model_selection import train_test_split
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR  = os.path.join(_THIS_DIR, '..', 'data')
+
+DEFAULT_DUCKDB_PATH      = os.path.join(_DATA_DIR, 'churn_dev.duckdb')
+DEFAULT_PREPROCESSOR_PATH = os.path.join(_DATA_DIR, 'preprocessor.pkl')
+
 
 class ChurnDataPrep:
-    """Preparing data for churn prodecition models with consistent preprocessing steps."""
+    """Preparing data for churn prediction using dbt-engineered features."""
 
-    def __init__(self, data_path='data/ml_features.csv', test_size=0.2, random_state=42):
+    def __init__(
+            self, 
+            duckdb_path=None, 
+            test_size=0.2, 
+            random_state=42):
+        
         """Initialize data preparation
 
         Args:
-            data_path: Path to the cleaned features CSV
+            duckdb_path: Path to the DuckDB database (dbt output)
             test_size: Proportion of test set (default 0.2 = 20%)
             random_state: Random seed for reproducibility (default 42)
         """
-        self.data_path = data_path
+        self.duckdb_path = duckdb_path or DEFAULT_DUCKDB_PATH
         self.test_size = test_size
         self.random_state = random_state
 
@@ -36,59 +48,149 @@ class ChurnDataPrep:
         self.feature_names = None
         self.categorical_cols = None
 
+    # STEP 1: LOADING DATA FROM DBT
+
     def load_data(self):
-        """Loading the cleaned feature data."""
-        print(f"📊Loading data from {self.data_path}...")
-        self.churn_df = pd.read_csv(self.data_path)
+        """Loading engineered features from dbt fct_customer_churn_features."""
+        print(f"📊Loading data from DuckDB{self.duckdb_path}...")
+
+        conn = duckdb.connect(self.duckdb_path)
+        self.churn_df = conn.execute("""
+            SELECT * FROM fct_customer_churn_features
+        """).df()
+        conn.close()
+
         print(f"✓ Loaded {len(self.churn_df):,} customers")
         print(f"✓ Churn rate: {self.churn_df['churn'].mean()*100:.2f}%")
+        print(f"✓ Features available: {len(self.churn_df.columns)}")
         return self 
     
-    def encode_features(self):
-        """Encoding categorical features using one-hot encoding"""
-        # Separating features and target
-        X = self.churn_df.drop(columns=['churn'])
-        Y = self.churn_df['churn']
+    # STEP 2: SELECTING FEATURES
 
-        # Finding categorical columns
-        self.categorical_cols = X.select_dtypes(include=['object']).columns.tolist()
-        print(f"\n✓ Encoding {len(self.categorical_cols)} categorical features:")
-        for col in self.categorical_cols:
-            print(f"  • {col}")
+    def select_features(self):
+        """
+        Selecting modeling features from dbt output.
+        Excludes: primary key, metadata, dashboard-only columns.
+        """
+    
+        # Columns to exclude from modeling
+        exclude_cols = [
+            'customer_id',                      # primary key - not a feature
+            'churn',                            # target variable - handled separately
+            'loaded_at',                        # metadata - not a feature
+            'features_generated_at',            # metadata - not a feature
+            'tenure_segment',                   # dashboard-only - lifecycle_stage covers this
+            'recency_bin',
+            'demographic_stability',
+            'is_single',                         # keeping it as OHE
+            'is_married',                        # keeping it as OHE
+            'is_divorced',                       # keeping it as OHE
+        ]
 
-        # One-hot encoding 
-        self.X_encoded = pd.get_dummies(X, columns=self.categorical_cols, drop_first=True)
-        self.feature_names = self.X_encoded.columns.tolist()
+        # Adding any timestamp/datetime columns automatically
+        timestamp_cols = self.churn_df.select_dtypes(
+            include=['datetime64']
+        ).columns.tolist()
 
-        print(f"✓ Total features after encoding: {len(self.feature_names)}")
+        exclude_cols = list(set(exclude_cols + timestamp_cols))
 
-        # Storing Y for splitting
-        self.Y = Y
+        print(f"Excluding: {exclude_cols}")
 
+        # Categorical columns - need encoding
+        # Raw strings kept in fct for dashboard use
+        self.categorical_cols = [
+            'preferred_order_category',         # will be target encoded
+            'marital_status',                   # will be OHE
+            'lifecycle_stage',                  # will be OHE
+            'recency_risk',                     # will be OHE
+            'product_risk_category',            # will be OHE
+            'value_tier',                       # will be OHE
+        ]
+
+        feature_cols = [
+            c for c in self.churn_df.columns 
+            if c not in exclude_cols
+        ]
+
+        self.X = self.churn_df[feature_cols]
+        self.Y = self.churn_df['churn']
+
+        print(f"\n✓ Features selected: {len(feature_cols)}")
+        print(f"    Numeric:       {len([c for c in feature_cols if c not in self.categorical_cols])}")
+        print(f"    Categorical:   {len(self.categorical_cols)}")
         return self
     
+    # STEP 3: ENCODING FEATURES
+
+    def encode_features(self):
+        """
+        Encoding categorical features.
+        - preferred_order_category: target encoding (churn rate per category)
+        - all other: one-hot encoding
+        
+        IMPORTANT: target encoding computed on full dataset here for EDA.
+        During production modeling it should be computed on train set only to avoid data leakage.
+        """
+        X = self.X.copy()
+
+        # Target encoding preferred_order_category
+        # Uses churn rate per category as numeric signal
+        print("\n✓ Target encoding: preferred_order_category")
+        self.target_encodings = (
+            self.churn_df.groupby('preferred_order_category')['churn']
+            .mean()
+            .to_dict()
+        )
+        X['preferred_order_category'] = (
+            X['preferred_order_category'].map(self.target_encodings)
+        )
+        X = X.drop(columns=['preferred_order_category'])
+
+        # OHE remaining categoricals
+        remaining_cats = [
+            c for c in self.categorical_cols
+            if c != 'preferred_order_category'
+        ]
+        print(f"✓ One-hot encoding: {len(remaining_cats)}")
+        self.X_encoded = pd.get_dummies(
+            X,
+            columns=remaining_cats,
+            drop_first=False,                  # tree models do not need drop_first
+            dtype=int
+        )
+
+        self.feature_names = self.X_encoded.columns.tolist()
+        print(f"✓ Total features after encoding: {len(self.feature_names)}")
+        return self
+
+    # STEP 4: SPLITTING INTO TRAIN/TEST
+    
     def split_data(self):
-        """Splitting data into training and testing sets."""
+        """Splitting data into train/test with stratification."""
         self.X_train, self.X_test, self.Y_train, self.Y_test = train_test_split(
             self.X_encoded,
             self.Y, 
             test_size=self.test_size,
             random_state=self.random_state,
-            stratify=self.Y
+            stratify=self.Y                # ensures same churn rate in train and test sets
         )
 
-        print(f"\n✓ Train set: {len(self.X_train):,} customers ({self.Y_train.mean()*100:.1f}% churn)")
-        print(f"✓ Test set:  {len(self.X_test):,} customers ({self.Y_test.mean()*100:.1f}% churn)")
-        
+        print(f"\n✓ Train set: {len(self.X_train):,} customers "
+              f"({self.Y_train.mean()*100:.1f}% churn)")
+        print(f"✓ Test set:  {len(self.X_test):,} customers "
+              f"({self.Y_test.mean()*100:.1f}% churn)")
         return self
     
+    # FULL PREPARATION PIPELINE
+    
     def prepare(self):
-        """ Running full preparation pipeline: load → encode → split."""
+        """ Running full preparation pipeline: load → select → encode → split."""
         print("\n" + "="*70)
         print("🔧 PREPARING DATA FOR MODELING")
         print("="*70)
         
         self.load_data()
+        self.select_features()
         self.encode_features()
         self.split_data()
 
@@ -99,39 +201,41 @@ class ChurnDataPrep:
         """Returning train/test splits."""
         if self.X_train is None:
             raise ValueError("Data not prepared yet. Call prepare() first.")
-        
         return self.X_train, self.X_test, self.Y_train, self.Y_test
     
-    def save_preprocessor(self, path='data/preprocessor.pkl'):
+    # SAVE / LOAD PREPROCESSOR 
+
+    def save_preprocessor(self, path=None):
         """Saving the preprocessor for future use (feature names, categorical cols, etc.)"""
+        path = path or DEFAULT_PREPROCESSOR_PATH
         preprocessor_info = {
            'feature_names': self.feature_names,
             'categorical_cols': self.categorical_cols,
+            'target_encodings': self.target_encodings,
             'test_size': self.test_size,
             'random_state': self.random_state
        }
         
         with open(path, 'wb')as f:
             pickle.dump(preprocessor_info, f)
-        
         print(f"✓ Preprocessor saved to: {path}")
     
     @staticmethod
-    def load_preprocessor(path='data/preprocessor.pkl'):
+    def load_preprocessor(path=None):
         """Loading a saved preprocessor."""
+        path = path or DEFAULT_PREPROCESSOR_PATH
         with open(path, 'rb') as f:
             preprocessor_info = pickle.load(f)
-        
         print(f"✓ Loaded preprocessor from {path}")
         return preprocessor_info
     
+    # TRANSFORMING NEW DATA (INFERENCE)
+    
     @staticmethod
-    def transform_new_data(new_data, preprocessor_path='data/preprocessor.pkl'):
+    def transform_new_data(new_data, preprocessor_path=None):
         """
         Transform new data using saved preprocessor settings.
-        
-        This applies the SAME one-hot encoding as training data and ensures
-        all features match exactly.
+        Applies SAME encoding as training data.
         
         Args:
             new_data: DataFrame or dict with raw customer features
@@ -140,19 +244,11 @@ class ChurnDataPrep:
         Returns:
             DataFrame with encoded features matching training data
         
-        Required input features:
-        - tenure
-        - warehouse_to_home
-        - num_devices_registered
-        - satisfaction_score
-        - num_addresses
-        - days_since_last_order
-        - cashback_amount
-        - preferred_order_category
-        - marital_status
-        - has_complained
-        - tenure_missing_flag (optional, defaults to 0)
+        Note: Feature engineering (lifecycle_stage, recency_risk, etc.)
+        should come from dbt fct_customer_churn_feature.
+        This method handles encoding only.
         """
+        preprocessor_path = preprocessor_path or DEFAULT_PREPROCESSOR_PATH
         # Loading preprocessor info
         with open(preprocessor_path, 'rb') as f:
             preprocessor_info = pickle.load(f)
@@ -163,208 +259,44 @@ class ChurnDataPrep:
         else:
             df = new_data.copy()
 
-        # Ensure tenure_missing_flag exists
-        if 'tenure_missing_flag' not in df.columns:
-            df['tenure_missing_flag'] = 0
-        
-        # ========================================
-        # FEATURE ENGINEERING (matching dbt models!)
-        # ========================================
-        
-        # 1. days_missing_flag (if days_since_last_order is missing)
-        df['days_missing_flag'] = df['days_since_last_order'].isna().astype(int)
-        
-        # Fill missing days_since_last_order if needed
-        if df['days_since_last_order'].isna().any():
-            df['days_since_last_order'] = df['days_since_last_order'].fillna(
-                df['days_since_last_order'].median()
-            )
-        
-        # 2. lifecycle_stage (based on tenure)
-        def get_lifecycle_stage(tenure):
-            if tenure == 0:
-                return 'brand_new'
-            elif tenure <= 3:
-                return 'new'
-            elif tenure <= 6:
-                return 'growing'
-            elif tenure <= 12:
-                return 'established'
-            else:
-                return 'loyal'
-        
-        df['lifecycle_stage'] = df['tenure'].apply(get_lifecycle_stage)
-        
-        # 3. is_new_customer (tenure <= 3 months)
-        df['is_new_customer'] = (df['tenure'] <= 3).astype(int)
-        
-        # 4. is_established (tenure >= 7 months)
-        df['is_established'] = (df['tenure'] >= 7).astype(int)
-        
-        # 5. tenure_segment (categorical binning)
-        def get_tenure_segment(tenure):
-            if tenure == 0:
-                return 'brand_new_0mo'
-            elif tenure <= 3:
-                return '1-3_months'
-            elif tenure <= 6:
-                return '4-6_months'
-            elif tenure <= 12:
-                return '7-12_months'
-            elif tenure <= 24:
-                return '1-2_years'
-            else:
-                return '2+_years'
-        
-        df['tenure_segment'] = df['tenure'].apply(get_tenure_segment)
-        
-        # 6. recency_risk (based on days_since_last_order)
-        def get_recency_risk(days):
-            if days <= 7:
-                return 'very_recent'
-            elif days <= 15:
-                return 'recent'
-            elif days <= 30:
-                return 'moderate'
-            else:
-                return 'dormant'
-        
-        df['recency_risk'] = df['days_since_last_order'].apply(get_recency_risk)
-        
-        # 7. is_very_recent (0-7 days)
-        df['is_very_recent'] = (df['days_since_last_order'] <= 7).astype(int)
-        
-        # 8. is_dormant (31+ days)
-        df['is_dormant'] = (df['days_since_last_order'] > 30).astype(int)
-        
-        # 9. is_active_stable (15-30 days sweet spot)
-        df['is_active_stable'] = (
-            (df['days_since_last_order'] >= 15) & 
-            (df['days_since_last_order'] <= 30)
-        ).astype(int)
-        
-        # 10. recency_bin (for U-shaped pattern)
-        def get_recency_bin(days):
-            if days <= 7:
-                return '0-7_days'
-            elif days <= 14:
-                return '8-14_days'
-            elif days <= 30:
-                return '15-30_days'
-            else:
-                return '31+_days'
-        
-        df['recency_bin'] = df['days_since_last_order'].apply(get_recency_bin)
-        
-        # 11. product_risk_category (based on preferred_order_category)
-        product_risk_map = {
-            'Mobile Phone': 'high_risk',
-            'Laptop & Accessory': 'high_risk',
-            'Fashion': 'medium_risk',
-            'Others': 'medium_risk',
-            'Grocery': 'low_risk'
-        }
-        df['product_risk_category'] = df['preferred_order_category'].map(
-            product_risk_map
-        ).fillna('medium_risk')
-        
-        # 12. is_tech_buyer (Mobile or Laptop)
-        df['is_tech_buyer'] = df['preferred_order_category'].isin(
-            ['Mobile Phone', 'Laptop & Accessory']
-        ).astype(int)
-        
-        # 13. is_grocery_buyer
-        df['is_grocery_buyer'] = (
-            df['preferred_order_category'] == 'Grocery'
-        ).astype(int)
-        
-        # 14. is_fashion_buyer
-        df['is_fashion_buyer'] = (
-            df['preferred_order_category'] == 'Fashion'
-        ).astype(int)
-        
-        # 15. demographic_stability (based on marital_status)
-        df['demographic_stability'] = df['marital_status'].apply(
-            lambda x: 'stable' if x == 'Married' else 'unstable'
+        # Target encoding preferred_order_category
+        target_encodings = preprocessor_info['target_encodings']
+        df['preferred_order_category'] = (
+            df['preferred_order_category']
+            .map(target_encodings)
+            .fillna(target_encodings.get('Others', 0.07))  # fallback for unknown
+        )
+        df = df.drop(columns=['preferred_order_category'])
+
+        # OHE remaining categoricals
+        remaining_cats = [
+            c for c in preprocessor_info['categorical_cols']
+            if c != 'preferred_order_category'
+        ]
+        df_encoded = pd.get_dummies(
+            df,
+            columns=remaining_cats,
+            drop_first=False,                  
+            dtype=int
         )
         
-        # 16. is_single
-        df['is_single'] = (df['marital_status'] == 'Single').astype(int)
-        
-        # 17. is_married
-        df['is_married'] = (df['marital_status'] == 'Married').astype(int)
-        
-        # 18. is_divorced
-        df['is_divorced'] = (df['marital_status'] == 'Divorced').astype(int)
-        
-        # 19. value_tier (based on cashback_amount)
-        def get_value_tier(cashback):
-            if cashback < 100:
-                return 'minimal_value'
-            elif cashback < 200:
-                return 'low_value'
-            elif cashback < 300:
-                return 'medium_value'
-            else:
-                return 'high_value'
-        
-        df['value_tier'] = df['cashback_amount'].apply(get_value_tier)
-        
-        # 20. cashback_per_month (TOP FEATURE! 24% importance)
-        df['cashback_per_month'] = df['cashback_amount'] / (df['tenure'] + 1)
-        
-        # 21. is_high_value (cashback >= 300)
-        df['is_high_value'] = (df['cashback_amount'] >= 300).astype(int)
-        
-        # 22. is_low_spender (cashback < 100)
-        df['is_low_spender'] = (df['cashback_amount'] < 100).astype(int)
-        
-        # 23. composite_risk_score (0-5 scale based on 5 risk factors)
-        risk_score = 0
-        
-        # Risk factor 1: New customer (tenure <= 3)
-        risk_score += (df['tenure'] <= 3).astype(int)
-        
-        # Risk factor 2: High-risk product (tech)
-        risk_score += df['is_tech_buyer']
-        
-        # Risk factor 3: Has complained
-        risk_score += df['has_complained']
-        
-        # Risk factor 4: Single
-        risk_score += df['is_single']
-        
-        # Risk factor 5: Dormant (31+ days)
-        risk_score += df['is_dormant']
-        
-        df['composite_risk_score'] = risk_score
-            
-        # Getting settings from preprocessor
-        categorical_cols = preprocessor_info['categorical_cols']
-        expected_features = preprocessor_info['feature_names']
-        
-        # Applying one-hot encoding (SAME as training!)
-        df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
-        
-        # Adding missing columns with 0 (categories that didn't appear in new data)
-        for col in expected_features:
+        # Aligning columns with training data
+        expected = preprocessor_info['feature_names']
+
+        # Adding missing columns with 0
+        for col in expected:
             if col not in df_encoded.columns:
                 df_encoded[col] = 0
-        
-        # Removing extra columns (categories that appeared in new data but not training)
-        df_encoded = df_encoded[expected_features]
-        
-        # Ensuring correct dtypes (all numeric)
-        for col in df_encoded.columns:
-            if df_encoded[col].dtype == 'object':
-                # This shouldn't happen, but just in case
-                df_encoded[col] = pd.Categorical(df_encoded[col]).codes
-        
+
+        # Removing extra columns
+        df_encoded = df_encoded[expected]
+
         return df_encoded
+        
     
 # Convenience funtion for quick use
-def prepare_data(data_pat='data/ml_features.csv'):
+def prepare_data(duckdb_path=None):
     """Quick data preparation with default settings."""
-    prep = ChurnDataPrep(data_path=data_pat)
+    prep = ChurnDataPrep(duckdb_path=duckdb_path)
     prep.prepare()
     return prep.get_train_test_data()

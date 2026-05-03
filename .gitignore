@@ -1,52 +1,42 @@
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
+*.pyc
+*.pyo
 .venv/
-ENV/
-*.egg-info/
-.eggs/
-dist/
-build/
-*.egg
-.pytest_cache/
-.coverage
-htmlcov/
+venv/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*/.ipynb_checkpoints/*
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# OS
-Thumbs.db
-desktop.ini
-.DS_Store
+# Jupyter
+.ipynb_checkpoints/
 
 # dbt
-churn_analysis/target/
-churn_analysis/dbt_packages/
-churn_analysis/logs/
-churn_analysis/dbt_modules/
-churn_analysis/*.duckdb
-churn_analysis/*.duckdb.wal
-churn_analysis/*.db
-
-# Environment
-.env
-.env.local
-
-# Logs
-*.log
+target/
+dbt_packages/
 logs/
+*.duckdb
+
+# Data & Models
+data/*.pkl
+data/*.duckdb
+data/shap_values.csv
+data/correlation_matrix.csv
+data/ecommerce_churn_cleaned.csv
+data/ecommerce_churn_seed.csv
+data/ml_features.csv
+data/rf_baseline_model.pkl
+
+# Keep these PNGs ← explicitly allow
+!data/model_comparison.png
+!data/shap_summary_bar.png
+!data/shap_beeswarm.png
+!data/shap_waterfall_high_risk.png
+
+# Debugging
+test_1.py
+python
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/

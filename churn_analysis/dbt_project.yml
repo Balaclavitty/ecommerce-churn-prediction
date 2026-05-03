@@ -36,7 +36,7 @@ models:
 
 seeds:
   churn_analysis:
-    ecommerce_churn_cleaned:
+    ecommerce_churn_seed:
       +column_types:
         tenure: integer
         warehouse_to_home: float
@@ -49,3 +49,6 @@ seeds:
         churn: integer
         days_missing_flag: integer
         tenure_missing_flag: integer
+        warehouse_missing_flag: integer
+        preferred_order_category: varchar
+        marital_status: varchar
