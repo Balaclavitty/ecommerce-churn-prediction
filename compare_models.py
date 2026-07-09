@@ -22,7 +22,7 @@ DUCKDB_PATH = os.path.join(DATA_DIR, 'churn_dev.duckdb')
 
 # IMPORTS 
 sys.path.append(BASE_DIR)
-from data_prep import ChurnDataPrep
+from src.data_prep import ChurnDataPrep
 
 print("\n" + "="*70)
 print("🤖 MODEL COMPARISON: RANDOM FOREST vs XGBOOST")
